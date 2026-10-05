@@ -1,0 +1,1 @@
+{"good": {"module.lua": ["M", "version", "sum", "M.new", "M:total"], "control.lua": ["result", "finished"], "functions.lua": ["callbacks", "app.worker:run"], "crlf.lua": ["crlf_value", "crlf_function"]}, "bad": ["broken.lua", "broken_long.lua", "broken_assignment.lua", "broken_local.lua", "lone_cr.lua"]}

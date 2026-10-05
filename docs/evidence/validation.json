@@ -1,0 +1,30 @@
+{
+  "verified_at_utc": "2026-10-05T11:51:37Z",
+  "compiler": "almide 0.62.0",
+  "engine": "gramide v0.2.11",
+  "profile": "native correctness; no performance measurement",
+  "almide_test": {
+    "passed": true,
+    "reported_tests_including_imports": 76,
+    "source_test_declarations": 15,
+    "test_files": 3
+  },
+  "cli": {
+    "good_fixtures": 4,
+    "bad_fixtures": 5,
+    "commands": [
+      "symbols",
+      "parse",
+      "outline",
+      "tags",
+      "tokens"
+    ],
+    "utf8_byte_spans": true,
+    "rejects_check": true,
+    "rejects_symbols_recovered": true,
+    "bad_symbols_stdout_empty": true
+  },
+  "generated_table_matches": true,
+  "table_sha256": "13316df57030fd554dad79faae50443c2a7b7e1a023cb7b1dd110e8a361d6687",
+  "limitations": "Structural reader only. See README for syntax and pinned-engine limits. No broad upstream conformance corpus."
+}

@@ -1,0 +1,183 @@
+// Lua 5.4 byte scanner, independently implemented from the reference manual.
+import gramide.tree
+import gramide.lex
+
+let KEYWORDS = ["and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"]
+let OPERATORS = ["...", "..", "//", "<<", ">>", "==", "~=", "<=", ">=", "::", "+", "-", "*", "/", "%", "^", "#", "&", "|", "~", "<", ">", "=", "(", ")", "[", "]", "{", "}", ";", ":", ",", "."]
+fn digit(b: Int) -> Bool = b >= 48 and b <= 57
+fn hex(b: Int) -> Bool = digit(b) or (b >= 65 and b <= 70) or (b >= 97 and b <= 102)
+fn alpha(b: Int) -> Bool = b == 95 or (b >= 65 and b <= 90) or (b >= 97 and b <= 122)
+fn at(s: Bytes, i: Int) -> Int = bytes.get_or(s, i, -1)
+fn same(s: Bytes, i: Int, text: String) -> Bool = {
+  let raw = bytes.from_string(text)
+  var j = 0
+  var yes = true
+  while yes and j < bytes.len(raw) { yes = at(s, i + j) == at(raw, j); j = j + 1 }
+  yes
+}
+// -1 means this is an ordinary [, otherwise the number of = signs.
+fn long_level(s: Bytes, i: Int) -> Int = {
+  if at(s, i) != 91 then -1 else {
+    var j = i + 1
+    while at(s, j) == 61 { j = j + 1 }
+    if at(s, j) == 91 then j - i - 1 else -1
+  }
+}
+fn long_end(s: Bytes, i: Int, level: Int) -> Int = {
+  var j = i + level + 2
+  var end = -1
+  while j < bytes.len(s) and end < 0 {
+    if at(s, j) == 93 then {
+      var k = j + 1
+      while at(s, k) == 61 { k = k + 1 }
+      if k - j - 1 == level and at(s, k) == 93 then end = k + 1 else ()
+    } else ()
+    j = j + 1
+  }
+  end
+}
+fn quoted_end(s: Bytes, i: Int) -> Int = {
+  let q = at(s, i)
+  var j = i + 1
+  var end = -1
+  var valid = true
+  while j < bytes.len(s) and end < 0 and valid {
+    let b = at(s, j)
+    if b == q then end = j + 1
+    else if b == 10 or b == 13 then valid = false
+    else if b == 92 then {
+      j = j + 1
+      let escape = at(s, j)
+      if escape == 122 then {
+        j = j + 1
+        while list.contains([9, 10, 11, 12, 13, 32], at(s, j)) { j = j + 1 }
+        j = j - 1
+      } else if escape == 120 then {
+        valid = hex(at(s, j + 1)) and hex(at(s, j + 2)); j = j + 2
+      } else if escape == 117 then {
+        valid = at(s, j + 1) == 123
+        j = j + 2
+        let first = j
+        while hex(at(s, j)) { j = j + 1 }
+        valid = valid and j > first and at(s, j) == 125
+      } else if digit(escape) then {
+        var count = 1
+        var value = escape - 48
+        while count < 3 and digit(at(s, j + 1)) { j = j + 1; count = count + 1; value = value * 10 + at(s, j) - 48 }
+        valid = value <= 255
+      } else if escape == 13 and at(s, j + 1) == 10 then j = j + 1
+      else if not list.contains([97, 98, 102, 110, 114, 116, 118, 92, 34, 39, 10, 13], escape) then valid = false
+      else ()
+    } else ()
+    j = j + 1
+  }
+  if valid then end else -1
+}
+fn number_end(s: Bytes, i: Int) -> Int = {
+  var j = i
+  let is_hex = at(s, i) == 48 and (at(s, i + 1) == 120 or at(s, i + 1) == 88)
+  if is_hex then j = j + 2 else ()
+  var digits = 0
+  while (if is_hex then hex(at(s, j)) else digit(at(s, j))) { j = j + 1; digits = digits + 1 }
+  if at(s, j) == 46 and at(s, j + 1) != 46 then {
+    j = j + 1
+    while (if is_hex then hex(at(s, j)) else digit(at(s, j))) { j = j + 1; digits = digits + 1 }
+  } else ()
+  var valid = digits > 0
+  if (if is_hex then at(s, j) == 112 or at(s, j) == 80 else at(s, j) == 101 or at(s, j) == 69) then {
+    j = j + 1
+    if at(s, j) == 43 or at(s, j) == 45 then j = j + 1 else ()
+    let first = j
+    while digit(at(s, j)) { j = j + 1 }
+    valid = valid and j > first
+  } else ()
+  if valid and not alpha(at(s, j)) and at(s, j) != 46 then j else -1
+}
+fn scan(source: String, recovering: Bool) -> Result[List[tree.Token], lex.LexError] = {
+  let s = bytes.from_string(source)
+  // gramide 0.2.11 counts source lines by LF. Its multiline-token end
+  // calculation treats lone CR differently; reject that unsupported input
+  // in strict mode rather than publish inconsistent complete symbol ranges.
+  if not recovering then {
+    var pos = 0
+    var source_line = 1
+    var source_start = 0
+    while pos < bytes.len(s) {
+      guard at(s, pos) != 13 or at(s, pos + 1) == 10 else err(lex.LexError { line: source_line, col: pos - source_start + 1, message: "unsupported lone CR line ending; use LF or CRLF" })
+      if at(s, pos) == 10 then { source_line = source_line + 1; source_start = pos + 1 } else ()
+      pos = pos + 1
+    }
+  } else ()
+  var tokens: List[tree.Token] = []
+  var i = 0
+  var line = 1
+  var line_start = 0
+  while i < bytes.len(s) {
+    let start = i
+    let first_line = line
+    let first_col = i - line_start + 1
+    let b = at(s, i)
+    var kind = tree.T_NONE
+    var message = ""
+    if list.contains([9, 10, 11, 12, 13, 32], b) then i = i + 1
+    else if same(s, i, "--") then {
+      let level = long_level(s, i + 2)
+      if level >= 0 then {
+        let end = long_end(s, i + 2, level)
+        if end < 0 then { message = "unterminated long comment"; i = bytes.len(s) } else i = end
+      } else { while i < bytes.len(s) and at(s, i) != 10 and at(s, i) != 13 { i = i + 1 } }
+    } else if long_level(s, i) >= 0 then {
+      kind = tree.T_STRING
+      let end = long_end(s, i, long_level(s, i))
+      if end < 0 then { message = "unterminated long string"; i = bytes.len(s) } else i = end
+    } else if b == 34 or b == 39 then {
+      kind = tree.T_STRING
+      let end = quoted_end(s, i)
+      if end < 0 then { message = "unterminated string or invalid escape"; i = bytes.len(s) } else i = end
+    } else if alpha(b) then {
+      i = i + 1
+      while alpha(at(s, i)) or digit(at(s, i)) { i = i + 1 }
+      let word = bytes.to_string_lossy(bytes.slice(s, start, i))
+      kind = if list.contains(KEYWORDS, word) then tree.T_KEYWORD else tree.T_IDENTIFIER
+    } else if digit(b) or (b == 46 and digit(at(s, i + 1))) then {
+      kind = tree.T_NUMBER
+      let end = number_end(s, i)
+      if end < 0 then { message = "malformed numeral"; i = i + 1 } else i = end
+    } else {
+      var width = 0
+      for op in OPERATORS { if width == 0 and same(s, i, op) then width = bytes.len(bytes.from_string(op)) else () }
+      if width == 0 then { message = "unexpected Lua character"; i = i + 1 }
+      else { kind = tree.T_PUNCT; i = i + width }
+    }
+    if message != "" then {
+      guard recovering else err(lex.LexError { line: first_line, col: first_col, message: message })
+      kind = tree.T_ERROR
+    } else ()
+    if kind != tree.T_NONE then list.push(tokens, tree.Token { kind: kind, start: start, end: i, line: first_line, col: first_col }) else ()
+    var j = start
+    while j < i {
+      if at(s, j) == 10 then { line = line + 1; line_start = j + 1 } else ()
+      j = j + 1
+    }
+  }
+  list.push(tokens, tree.Token { kind: tree.T_EOF, start: i, end: i, line: line, col: i - line_start + 1 })
+  ok(tokens)
+}
+
+test "Lua long levels and UTF-8 preserve byte spans" {
+  let src = "--[=[ ignored ]==] 😀 ]=]\nlocal s = [==[α\nβ]==]"
+  let ts = scan(src, false)!
+  assert_eq(list.len(ts), 5)
+  let literal = list.get(ts, 3)!
+  assert_eq(tree.token_text(bytes.from_string(src), literal), "[==[α\nβ]==]")
+  assert_eq(literal.line, 2)
+}
+test "Lua malformed strings numbers and comments fail strictly" {
+  for src in ["'bad\\q'", "'unfinished", "[=[open", "--[==[open", "0x", "1e+"] { assert(result.is_err(scan(src, false))) }
+}
+
+test "strict scanners reject lone CR even inside multiline tokens" {
+  assert(result.is_err(scan("\r", false)))
+  assert(result.is_err(scan("/* \r */", false)))
+  assert(result.is_ok(scan("\r\n", false)))
+}

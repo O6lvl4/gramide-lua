@@ -1,0 +1,80 @@
+import gramide.parser
+import gramide.tree
+import gramide.tags
+import self.grammar
+import self.lexer
+import self.symbols
+import self.table
+
+test "module.lua parses with identical generated and dynamic trees" {
+  let source = "-- UTF-8 fixture: café / 日本語 / 🌳\nlocal M = {}\nlocal version <const> = \"1.0\"\n\nlocal function sum(values, ...)\n  local total = 0\n  for _, value in ipairs(values) do\n    total = total + value\n  end\n  return total\nend\n\nfunction M.new(name)\n  local object = {\n    name = name or \"anonymous\",\n    values = {1, 2, 3; [\"last\"] = 4},\n    description = [==[First line\n日本語 and ]=] do not close this string\n]==],\n  }\n  return setmetatable(object, {__index = M})\nend\n\nfunction M:total()\n  return sum(self.values)\nend\n\nreturn M\n"
+  let tokens = lexer.scan(source, false)!
+  let dynamic = parser.parse(grammar.rules(), bytes.from_string(source), tokens)!
+  let compiled = parser.parse_with(table.compiled(), bytes.from_string(source), tokens)!
+  assert_eq(tree.sexp(dynamic.root, dynamic.names), tree.sexp(compiled.root, compiled.names))
+  let rows = tags.of_tree(compiled.root, tokens, bytes.from_string(source), compiled.names, ".", symbols.symbol_rules())
+  assert(list.any(rows, (row) => row.name == "M"))
+  assert(list.any(rows, (row) => row.name == "version"))
+  assert(list.any(rows, (row) => row.name == "sum"))
+  assert(list.any(rows, (row) => row.name == "M.new"))
+  assert(list.any(rows, (row) => row.name == "M:total"))
+}
+
+test "control.lua parses with identical generated and dynamic trees" {
+  let source = "--[=[ Long comment containing unmatched-looking { ([ and a ]==] marker. ]=]\nlocal result = 0\nfor i = 1, 10, 2 do\n  if i % 3 == 0 then\n    result = result + i\n  elseif i > 5 then\n    break\n  else\n    result = result | (i << 1)\n  end\nend\nwhile result < 100 do result = result * 2 end\nrepeat result = result - 1 until result < 100\n\ndo\n  local open <close> = acquire()\n  open:write(\"hello\\z  \\n world\")\nend\n::finished::\nif result == 0 then goto finished end\nreturn result, 0x1.fp+3, 1.5e-2, 2^3^2, \"a\" .. \"b\" .. \"c\"\n"
+  let tokens = lexer.scan(source, false)!
+  let dynamic = parser.parse(grammar.rules(), bytes.from_string(source), tokens)!
+  let compiled = parser.parse_with(table.compiled(), bytes.from_string(source), tokens)!
+  assert_eq(tree.sexp(dynamic.root, dynamic.names), tree.sexp(compiled.root, compiled.names))
+  let rows = tags.of_tree(compiled.root, tokens, bytes.from_string(source), compiled.names, ".", symbols.symbol_rules())
+  assert(list.any(rows, (row) => row.name == "result"))
+  assert(list.any(rows, (row) => row.name == "finished"))
+}
+
+test "functions.lua parses with identical generated and dynamic trees" {
+  let source = "local callbacks = {\n  function(x) return x * x end,\n  function(x, ...) return select(\"#\", ...), x end,\n}\nfunction app.worker:run(input)\n  self.handlers[1](input)\n  factory().target = input\n  return (callbacks[1])(input), require \"module\", consume {ready = true}\nend\n"
+  let tokens = lexer.scan(source, false)!
+  let dynamic = parser.parse(grammar.rules(), bytes.from_string(source), tokens)!
+  let compiled = parser.parse_with(table.compiled(), bytes.from_string(source), tokens)!
+  assert_eq(tree.sexp(dynamic.root, dynamic.names), tree.sexp(compiled.root, compiled.names))
+  let rows = tags.of_tree(compiled.root, tokens, bytes.from_string(source), compiled.names, ".", symbols.symbol_rules())
+  assert(list.any(rows, (row) => row.name == "callbacks"))
+  assert(list.any(rows, (row) => row.name == "app.worker:run"))
+}
+
+test "broken.lua is not accepted by structural reading" {
+  assert(result.is_err(grammar.parse_src("function broken(x)\n  return x +\nend\n")))
+}
+
+test "broken_long.lua is not accepted by structural reading" {
+  assert(result.is_err(grammar.parse_src("local x = [=[unterminated\n")))
+}
+
+test "broken_assignment.lua is not accepted by structural reading" {
+  assert(result.is_err(grammar.parse_src("make() = 4\n")))
+}
+
+test "broken_local.lua is not accepted by structural reading" {
+  assert(result.is_err(grammar.parse_src("local function object.method() end\n")))
+}
+
+test "outline recovery can find a following intact declaration" {
+  let source = "local broken = ;\nfunction saved() return 1 end"
+  let tokens = lexer.scan(source, true)!
+  let parsed = parser.parse_recovering(table.compiled(), bytes.from_string(source), tokens)!
+  let rows = tags.of_tree(parsed.root, tokens, bytes.from_string(source), parsed.names, ".", symbols.symbol_rules())
+  assert(list.any(rows, (row) => row.name == "saved"))
+  assert(result.is_err(grammar.parse_src(source)))
+}
+
+test "CRLF symbol coordinates stay inside original LF-counted source lines" {
+  let source = "-- UTF-8 日本語\r\nlocal crlf_value = [=[line one\r\nline two]=]\r\nfunction crlf_function() return crlf_value end\r\n"
+  let tokens = lexer.scan(source, false)!
+  let parsed = parser.parse_with(table.compiled(), bytes.from_string(source), tokens)!
+  let rows = tags.of_tree(parsed.root, tokens, bytes.from_string(source), parsed.names, ".", symbols.symbol_rules())
+  let lines = tags.line_count(bytes.from_string(source))
+  for row in rows { assert(row.line >= 1 and row.end_line >= row.line and row.end_line <= lines) }
+}
+test "lone CR source is explicitly unsupported in strict readers" {
+  assert(result.is_err(lexer.scan("-- UTF-8 日本語\rlocal crlf_value = [=[line one\rline two]=]\rfunction crlf_function() return crlf_value end\r", false)))
+}

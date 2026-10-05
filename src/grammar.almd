@@ -1,0 +1,65 @@
+// Lua 5.4 syntax core. Semantic restrictions (scope, goto, const) are not checked.
+import gramide.parser
+import gramide.parser.{ tok, lit, keep, r, seq, alt, rep, rep1, opt, wrap, field, ahead, prec, lits, keeps, grammar, recover_all, nott, leftf }
+import self.lexer
+
+let name = tok("identifier")
+fn comma(one: parser.Rule) -> parser.Rule = seq([one, rep(seq([lit(","), one]))])
+fn rules() -> parser.Grammar = grammar("source_file", [
+  ("source_file", wrap("source_file", seq([rep(recover_all(r("stmt"))), opt(r("return"))]))),
+  ("block", wrap("block", seq([rep(r("stmt")), opt(r("return"))]))),
+  ("return", wrap("return_statement", seq([lit("return"), opt(r("expr_list")), opt(lit(";"))]))),
+  ("stmt", alt([
+    lit(";"), r("function_decl"), r("local"), r("if"), r("while"), r("repeat"), r("for"),
+    wrap("do_statement", seq([lit("do"), r("block"), lit("end")])),
+    wrap("break_statement", lit("break")),
+    wrap("goto_statement", seq([lit("goto"), name])),
+    wrap("label", seq([lit("::"), field("name", name), lit("::")])),
+    wrap("assignment", seq([comma(r("variable")), lit("="), r("expr_list")])),
+    wrap("call_statement", r("call_expr"))
+  ])),
+  ("function_decl", wrap("function_declaration", seq([
+    alt([
+      seq([lit("local"), lit("function"), field("name", name)]),
+      seq([lit("function"), field("name", wrap("function_name", seq([name, rep(seq([lit("."), name])), opt(seq([lit(":"), name]))])))])
+    ]), r("function_body")
+  ]))),
+  ("function_body", seq([wrap("parameters", seq([lit("("), opt(alt([lit("..."), seq([comma(name), opt(seq([lit(","), lit("...")]))])])), lit(")")])), r("block"), lit("end")])),
+  ("local", wrap("local_declaration", seq([lit("local"), comma(wrap("local_binding", seq([field("name", name), opt(seq([lit("<"), name, lit(">")]))]))), opt(seq([lit("="), r("expr_list")]))]))),
+  ("if", wrap("if_statement", seq([lit("if"), r("expr"), lit("then"), r("block"), rep(seq([lit("elseif"), r("expr"), lit("then"), r("block")])), opt(seq([lit("else"), r("block")])), lit("end")]))),
+  ("while", wrap("while_statement", seq([lit("while"), r("expr"), lit("do"), r("block"), lit("end")]))),
+  ("repeat", wrap("repeat_statement", seq([lit("repeat"), r("block"), lit("until"), r("expr")]))),
+  ("for", wrap("for_statement", seq([lit("for"), alt([seq([name, lit("="), r("expr"), lit(","), r("expr"), opt(seq([lit(","), r("expr")]))]), seq([comma(name), lit("in"), r("expr_list")])]), lit("do"), r("block"), lit("end")]))),
+  ("expr_list", comma(r("expr"))),
+  ("expr", prec("binary", r("concat"), [keep("or"), keep("and"), keeps(["<", ">", "<=", ">=", "~=", "=="]), keep("|"), keep("~"), keep("&"), keeps(["<<", ">>"])])),
+  // Concatenation and exponentiation associate right; unary is below power.
+  ("concat", seq([r("sum"), opt(wrap("binary", seq([keep(".."), r("concat")])))])),
+  ("sum", prec("binary", r("unary"), [keeps(["+", "-"]), keeps(["*", "/", "//", "%"])])),
+  ("unary", alt([wrap("unary", seq([keeps(["not", "#", "-", "~"]), r("unary")])), r("power")])),
+  ("power", seq([r("atom"), opt(wrap("binary", seq([keep("^"), r("unary")])))])),
+  ("atom", alt([tok("number"), tok("string"), keeps(["nil", "false", "true", "..."]), r("table"), wrap("function_expression", seq([lit("function"), r("function_body")])), r("prefix")])),
+  ("base", alt([name, wrap("group", seq([lit("("), r("expr"), lit(")")]))])),
+  ("prefix", wrap("prefix_expression", seq([r("base"), rep(r("suffix"))]))),
+  ("suffix", alt([r("access"), r("call")])),
+  ("access", alt([wrap("field_access", seq([lit("."), field("field", name)])), wrap("index", seq([lit("["), r("expr"), lit("]")]))])),
+  ("call", seq([opt(seq([lit(":"), field("field", name)])), r("arguments")])),
+  ("arguments", wrap("arguments", alt([seq([lit("("), opt(r("expr_list")), lit(")")]), r("table"), tok("string")]))),
+  // Greedy prefix repetition would consume the required final operation.
+  // These recursive tails require the last suffix to be an access/call.
+  ("variable", alt([seq([r("base"), r("variable_tail")]), name])),
+  ("variable_tail", alt([seq([r("suffix"), r("variable_tail")]), r("access")])),
+  ("call_expr", seq([r("base"), r("call_tail")])),
+  ("call_tail", alt([seq([r("suffix"), r("call_tail")]), r("call")])),
+  ("table", wrap("table_constructor", seq([lit("{"), opt(seq([r("table_field"), rep(seq([lits([",", ";"]), r("table_field")])), opt(lits([",", ";"]))])), lit("}")]))),
+  ("table_field", alt([wrap("keyed_field", seq([lit("["), r("expr"), lit("]"), lit("="), r("expr")])), wrap("named_field", seq([field("name", name), lit("="), r("expr")])), r("expr")]))
+])
+fn parse_src(source: String) -> Result[parser.Parsed, String] = {
+  let ts = lexer.scan(source, false) |> result.map_err((e) => e.message)!
+  parser.parse(rules(), bytes.from_string(source), ts) |> result.map_err((e) => parser.format_failure(e))
+}
+test "Lua core function table loops and operators" {
+  assert(result.is_ok(parse_src("local function sum(xs, ...) local n = 0 for _, x in ipairs(xs) do n = n + x end return n end local t = {x=1, [2]=3; 4} t.x = -2^2 .. 'x'")))
+}
+test "Lua rejects invalid assignment and unfinished declarations" {
+  for source in ["local function a.b() end", "local function a:b() end", "function f(", "local = 2", "if x then", "f() = 1", "x + y", "return 1 local x = 2", "local x = {a=}"] { assert(result.is_err(parse_src(source))) }
+}
