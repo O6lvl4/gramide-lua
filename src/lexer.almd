@@ -7,7 +7,7 @@ let OPERATORS = ["...", "..", "//", "<<", ">>", "==", "~=", "<=", ">=", "::", "+
 fn digit(b: Int) -> Bool = b >= 48 and b <= 57
 fn hex(b: Int) -> Bool = digit(b) or (b >= 65 and b <= 70) or (b >= 97 and b <= 102)
 fn alpha(b: Int) -> Bool = b == 95 or (b >= 65 and b <= 90) or (b >= 97 and b <= 122)
-fn at(s: Bytes, i: Int) -> Int = bytes.get_or(s, i, -1)
+fn at(s: Bytes, i: Int) -> Int = (bytes.get(s, i) ?? -1)
 fn same(s: Bytes, i: Int, text: String) -> Bool = {
   let raw = bytes.from_string(text)
   var j = 0
